@@ -303,6 +303,7 @@ export default function App() {
                 title="Local Repository DAG History"
                 commits={currentState.commits}
                 branches={currentState.branches}
+                tags={currentState.tags}
                 head={currentState.head}
                 onSelectCommit={(commit) => setSelectedCommit(commit)}
               />
@@ -311,6 +312,7 @@ export default function App() {
                 title="Remote Repository (origin) DAG History"
                 commits={currentState.remote.commits}
                 branches={currentState.remote.branches}
+                tags={currentState.remote.tags}
                 onSelectCommit={(commit) => setSelectedCommit(commit)}
                 isRemote
                 onSimulateRemoteCommit={handleSimulateRemoteCommit}

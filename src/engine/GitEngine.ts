@@ -260,15 +260,19 @@ export class GitEngine {
       case 'switch':
       case 'checkout':
         return this.gitSwitch(args);
+      case 'merge':
+        return this.gitMerge(args);
+      case 'tag':
+        return this.gitTag(args);
       case 'fetch':
         return this.gitFetch();
       case 'push':
-        return this.gitPush();
+        return this.gitPush(args);
       case 'pull':
         return this.gitPull();
       default:
         return this.errorResult(
-          `Unknown or unsupported git command: 'git ${subCommand}'. Supported commands: git init, git status, git add, git commit, git log, git branch, git switch, git fetch, git push, git pull`
+          `Unknown or unsupported git command: 'git ${subCommand}'. Supported commands: git init, git status, git add, git commit, git log, git branch, git switch, git merge, git tag, git fetch, git push, git pull`
         );
     }
   }
@@ -809,7 +813,283 @@ export class GitEngine {
     };
   }
 
-  public gitPush(): GitOperationResult {
+  public gitMerge(args: string[]): GitOperationResult {
+    const currentState = this.getState();
+    if (!currentState.isInitialized) {
+      return this.errorResult('fatal: not a git repository (or any of the parent directories): .git');
+    }
+
+    if (args.length === 0) {
+      return this.errorResult('fatal: No branch or commit specified to merge. Usage: git merge <branch>');
+    }
+
+    const targetRef = args[0];
+    const currentBranch = currentState.head.type === 'branch' ? currentState.head.value : null;
+
+    if (!currentBranch) {
+      return this.errorResult('fatal: You are in a detached HEAD state. Switch to a branch before merging.');
+    }
+
+    const currentHash = currentState.branches[currentBranch];
+
+    // Resolve target hash from branch, tag, or direct hash
+    let targetHash = currentState.branches[targetRef] || currentState.tags?.[targetRef];
+    if (!targetHash && currentState.commits[targetRef]) {
+      targetHash = targetRef;
+    }
+
+    if (!targetHash) {
+      return this.errorResult(`merge: ${targetRef} - not something we can merge`);
+    }
+
+    if (currentHash === targetHash) {
+      return {
+        success: true,
+        nextState: currentState,
+        output: 'Already up to date.',
+        explanation: {
+          title: 'git merge',
+          whatHappened: `Branch '${currentBranch}' is already up to date with '${targetRef}'.`,
+          why: 'No new commits exist on the target reference that are missing from your current branch.',
+          underTheHood: 'Current branch tip already points to target commit.',
+          whatChanged: [],
+        },
+        animationEvents: [],
+      };
+    }
+
+    // Helper: check if ancestor
+    const isAncestor = (ancestor: string, descendant: string): boolean => {
+      if (!ancestor || !descendant) return false;
+      const visited = new Set<string>();
+      const queue = [descendant];
+
+      while (queue.length > 0) {
+        const curr = queue.shift()!;
+        if (curr === ancestor) return true;
+        if (!visited.has(curr)) {
+          visited.add(curr);
+          const commitObj = currentState.commits[curr];
+          if (commitObj) {
+            queue.push(...commitObj.parentHashes);
+          }
+        }
+      }
+      return false;
+    };
+
+    // Case 1: Fast-forward (currentHash is ancestor of targetHash, or current branch has no commits yet)
+    if (!currentHash || isAncestor(currentHash, targetHash)) {
+      const targetCommit = currentState.commits[targetHash];
+      const newFiles = { ...currentState.files };
+
+      if (targetCommit) {
+        Object.entries(targetCommit.snapshot).forEach(([filename, content]) => {
+          newFiles[filename] = {
+            name: filename,
+            content,
+            status: 'unchanged',
+            lastCommittedContent: content,
+          };
+        });
+      }
+
+      const nextState: RepositoryState = {
+        ...currentState,
+        branches: {
+          ...currentState.branches,
+          [currentBranch]: targetHash,
+        },
+        files: newFiles,
+        stagingArea: {},
+      };
+
+      this.state = nextState;
+
+      return {
+        success: true,
+        nextState,
+        output: `Updating ${currentHash ? currentHash.substring(0, 7) : 'head'}..${targetHash.substring(0, 7)}\nFast-forward`,
+        explanation: {
+          title: 'git merge (Fast-forward)',
+          whatHappened: `Fast-forwarded branch '${currentBranch}' directly to '${targetRef}' (${targetHash.substring(0, 7)}).`,
+          why: 'Since no new local commits were created since branching, Git simply moved the branch pointer forward without creating a new merge commit.',
+          underTheHood: `Moved ref refs/heads/${currentBranch} pointer forward to ${targetHash}.`,
+          whatChanged: [`Moved branch pointer '${currentBranch}' to ${targetHash}`],
+        },
+        animationEvents: [
+          {
+            id: `merge-ff-${Date.now()}`,
+            type: 'MOVE_BRANCH',
+            payload: { branchName: currentBranch, targetHash },
+            description: `Fast-forwarded '${currentBranch}' to ${targetHash.substring(0, 7)}`,
+          },
+        ],
+      };
+    }
+
+    // Case 2: Target is already ancestor of current (Already up to date)
+    if (isAncestor(targetHash, currentHash)) {
+      return {
+        success: true,
+        nextState: currentState,
+        output: 'Already up to date.',
+        explanation: {
+          title: 'git merge',
+          whatHappened: `Target '${targetRef}' is an ancestor of '${currentBranch}'. Nothing to merge.`,
+          why: 'All commits from target branch are already included in your current history.',
+          underTheHood: 'Target commit is reachable from current HEAD.',
+          whatChanged: [],
+        },
+        animationEvents: [],
+      };
+    }
+
+    // Case 3: 3-Way Merge Commit (Divergent histories)
+    const currentCommit = currentState.commits[currentHash];
+    const targetCommit = currentState.commits[targetHash];
+
+    const mergedSnapshot: Record<string, string> = {
+      ...(currentCommit ? currentCommit.snapshot : {}),
+      ...(targetCommit ? targetCommit.snapshot : {}),
+    };
+
+    const hash = Math.random().toString(16).substring(2, 9);
+    const message = `Merge branch '${targetRef}' into ${currentBranch}`;
+
+    const mergeCommit: Commit = {
+      hash,
+      message,
+      parentHashes: [currentHash, targetHash],
+      snapshot: mergedSnapshot,
+      author: 'User <user@example.com>',
+      timestamp: Date.now(),
+    };
+
+    const newFiles = { ...currentState.files };
+    Object.entries(mergedSnapshot).forEach(([filename, content]) => {
+      newFiles[filename] = {
+        name: filename,
+        content,
+        status: 'unchanged',
+        lastCommittedContent: content,
+      };
+    });
+
+    const nextState: RepositoryState = {
+      ...currentState,
+      commits: {
+        ...currentState.commits,
+        [hash]: mergeCommit,
+      },
+      branches: {
+        ...currentState.branches,
+        [currentBranch]: hash,
+      },
+      files: newFiles,
+      stagingArea: {},
+    };
+
+    this.state = nextState;
+
+    return {
+      success: true,
+      nextState,
+      output: `Merge made by the 'ort' strategy.\n [${currentBranch} ${hash}] ${message}`,
+      explanation: {
+        title: 'git merge (3-Way Merge)',
+        whatHappened: `Created a merge commit ${hash} combining changes from '${currentBranch}' and '${targetRef}'.`,
+        why: 'Because the branches had diverged with independent commits, Git joined their histories with a new commit having 2 parent commits.',
+        underTheHood: `Created commit ${hash} with parentHashes: [${currentHash}, ${targetHash}]. Advanced '${currentBranch}'.`,
+        whatChanged: [
+          `Created 3-way merge commit ${hash}`,
+          `Connected parents ${currentHash.substring(0, 7)} and ${targetHash.substring(0, 7)}`,
+          `Moved '${currentBranch}' to ${hash}`,
+        ],
+      },
+      animationEvents: [
+        {
+          id: `merge-commit-${hash}`,
+          type: 'MERGE_COMMIT',
+          payload: { hash, parents: [currentHash, targetHash], branch: currentBranch },
+          description: `Created merge commit ${hash}`,
+        },
+      ],
+    };
+  }
+
+  public gitTag(args: string[]): GitOperationResult {
+    const currentState = this.getState();
+    if (!currentState.isInitialized) {
+      return this.errorResult('fatal: not a git repository (or any of the parent directories): .git');
+    }
+
+    if (args.length === 0) {
+      const tags = Object.keys(currentState.tags || {});
+      return {
+        success: true,
+        nextState: currentState,
+        output: tags.length > 0 ? tags.join('\n') : '',
+        explanation: {
+          title: 'git tag',
+          whatHappened: 'Listed all lightweight tags in repository.',
+          why: 'git tag lists release or milestone markers created in your project.',
+          underTheHood: 'Read ref files from .git/refs/tags/',
+          whatChanged: [],
+        },
+        animationEvents: [],
+      };
+    }
+
+    const tagName = args[0];
+    const targetRef = args[1];
+
+    let targetHash = targetRef
+      ? currentState.branches[targetRef] || currentState.tags?.[targetRef] || (currentState.commits[targetRef] ? targetRef : null)
+      : null;
+
+    if (!targetHash) {
+      const currentBranch = currentState.head.type === 'branch' ? currentState.head.value : null;
+      targetHash = currentBranch ? currentState.branches[currentBranch] : currentState.head.value;
+    }
+
+    if (!targetHash) {
+      return this.errorResult(`fatal: Failed to resolve '${targetRef || 'HEAD'}' as a valid commit.`);
+    }
+
+    const nextState: RepositoryState = {
+      ...currentState,
+      tags: {
+        ...(currentState.tags || {}),
+        [tagName]: targetHash,
+      },
+    };
+
+    this.state = nextState;
+
+    return {
+      success: true,
+      nextState,
+      output: `Created tag '${tagName}' at commit ${targetHash.substring(0, 7)}`,
+      explanation: {
+        title: 'git tag',
+        whatHappened: `Created tag '${tagName}' pointing to commit ${targetHash.substring(0, 7)}.`,
+        why: 'Tags are permanent, friendly reference names attached to specific commits (e.g. v1.0.0).',
+        underTheHood: `Created ref .git/refs/tags/${tagName} pointing to hash ${targetHash}.`,
+        whatChanged: [`Created tag reference '${tagName}' -> ${targetHash.substring(0, 7)}`],
+      },
+      animationEvents: [
+        {
+          id: `tag-${tagName}`,
+          type: 'CREATE_TAG',
+          payload: { tagName, targetHash },
+          description: `Created tag '${tagName}' at ${targetHash.substring(0, 7)}`,
+        },
+      ],
+    };
+  }
+
+  public gitPush(args: string[] = []): GitOperationResult {
     const currentState = this.getState();
     if (!currentState.isInitialized) {
       return this.errorResult('fatal: not a git repository');
@@ -833,6 +1113,11 @@ export class GitEngine {
       curr = currentState.commits[curr].parentHashes[0];
     }
 
+    const pushTags = args.includes('--tags') || args.includes('origin');
+    const remoteTags = pushTags || currentState.remote.tags
+      ? { ...(currentState.remote.tags || {}), ...(currentState.tags || {}) }
+      : { ...(currentState.remote.tags || {}) };
+
     const nextState: RepositoryState = {
       ...currentState,
       remote: {
@@ -841,6 +1126,7 @@ export class GitEngine {
           [currentBranch]: currentHash,
         },
         commits: remoteCommits,
+        tags: remoteTags,
       },
     };
 

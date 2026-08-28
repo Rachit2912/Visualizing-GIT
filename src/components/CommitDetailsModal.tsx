@@ -73,7 +73,7 @@ export const CommitDetailsModal: React.FC<CommitDetailsModalProps> = ({ commit, 
               </div>
               <div className="flex items-center gap-1.5">
                 <GitCommit className="w-3.5 h-3.5 text-sky-400" />
-                <span>Parent: {commit.parentHashes.join(', ') || 'Root commit (no parent)'}</span>
+                <span>Parent(s): {commit.parentHashes.length > 0 ? commit.parentHashes.join(', ') : 'Root commit (no parent)'}</span>
               </div>
             </div>
           </div>
