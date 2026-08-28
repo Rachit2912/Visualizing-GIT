@@ -17,6 +17,7 @@ export const createInitialRepositoryState = (): RepositoryState => ({
   stagingArea: {},
   commits: {},
   branches: {},
+  tags: {},
   head: {
     type: 'branch',
     value: 'main',
@@ -24,6 +25,7 @@ export const createInitialRepositoryState = (): RepositoryState => ({
   remote: {
     branches: {},
     commits: {},
+    tags: {},
   },
   remoteName: 'origin',
 });

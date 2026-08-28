@@ -124,4 +124,59 @@ describe('GitEngine Unit Tests', () => {
     expect(res.success).toBe(false);
     expect(res.error).toContain('Unknown or unsupported git command');
   });
+
+  it('should create tags with git tag', () => {
+    engine.executeCommand('git init');
+    engine.executeCommand('git add .');
+    engine.executeCommand('git commit -m "Initial"');
+
+    const resTag = engine.executeCommand('git tag v1.0.0');
+    expect(resTag.success).toBe(true);
+    expect(engine.getState().tags['v1.0.0']).toBeDefined();
+
+    const resList = engine.executeCommand('git tag');
+    expect(resList.output).toContain('v1.0.0');
+  });
+
+  it('should merge fast-forward and 3-way merge correctly', () => {
+    engine.executeCommand('git init');
+    engine.executeCommand('git add .');
+    engine.executeCommand('git commit -m "C1"');
+
+    // Create feature branch
+    engine.executeCommand('git branch feature');
+    engine.executeCommand('git switch feature');
+
+    // Feature commit C2
+    engine.createFile('feature.ts', 'feature code');
+    engine.executeCommand('git add .');
+    engine.executeCommand('git commit -m "C2 feature"');
+
+    // Fast-forward merge into main
+    engine.executeCommand('git switch main');
+    const resFF = engine.executeCommand('git merge feature');
+    expect(resFF.success).toBe(true);
+    expect(resFF.output).toContain('Fast-forward');
+
+    // Now make divergent commit on main (C3)
+    engine.createFile('main_file.txt', 'main code');
+    engine.executeCommand('git add .');
+    engine.executeCommand('git commit -m "C3 main"');
+
+    // Make divergent commit on feature (C4)
+    engine.executeCommand('git switch feature');
+    engine.createFile('feature2.ts', 'feature code 2');
+    engine.executeCommand('git add .');
+    engine.executeCommand('git commit -m "C4 feature"');
+
+    // 3-Way Merge feature into main
+    engine.executeCommand('git switch main');
+    const res3Way = engine.executeCommand('git merge feature');
+    expect(res3Way.success).toBe(true);
+    expect(res3Way.output).toContain('Merge made by the');
+
+    const mainHash = engine.getState().branches['main'];
+    const mergeCommit = engine.getState().commits[mainHash];
+    expect(mergeCommit.parentHashes).toHaveLength(2);
+  });
 });

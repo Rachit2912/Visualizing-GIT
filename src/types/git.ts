@@ -25,6 +25,7 @@ export interface Head {
 export interface RemoteState {
   branches: Record<string, string>;
   commits: Record<string, Commit>;
+  tags?: Record<string, string>;
 }
 
 export interface RepositoryState {
@@ -33,6 +34,7 @@ export interface RepositoryState {
   stagingArea: Record<string, string>;
   commits: Record<string, Commit>;
   branches: Record<string, string>;
+  tags: Record<string, string>;
   head: Head;
   remote: RemoteState;
   remoteName: string;
@@ -48,6 +50,8 @@ export type AnimationEventType =
   | 'CREATE_COMMIT'
   | 'CREATE_BRANCH'
   | 'SWITCH_BRANCH'
+  | 'MOVE_BRANCH'
+  | 'CREATE_TAG'
   | 'SYNC_REMOTE_FETCH'
   | 'SYNC_REMOTE_PUSH'
   | 'MERGE_COMMIT';
