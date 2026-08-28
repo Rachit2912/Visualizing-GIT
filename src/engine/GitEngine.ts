@@ -157,10 +157,83 @@ export class GitEngine {
     };
   }
 
+  // Helper to simulate a commit created by another developer on Remote (origin)
+  public simulateRemoteCommit(message: string, filename: string, content: string): GitOperationResult {
+    const currentState = this.getState();
+    const parentHash = currentState.remote.branches['main'] || Object.keys(currentState.remote.commits)[0] || '';
+    const parentCommit = parentHash ? currentState.remote.commits[parentHash] : null;
+
+    const snapshot: Record<string, string> = parentCommit ? { ...parentCommit.snapshot } : {};
+    snapshot[filename] = content;
+
+    const hash = Math.random().toString(16).substring(2, 9);
+    const newCommit: Commit = {
+      hash,
+      message,
+      parentHashes: parentHash ? [parentHash] : [],
+      snapshot,
+      author: 'Collaborator <dev@remote.com>',
+      timestamp: Date.now(),
+    };
+
+    const nextState: RepositoryState = {
+      ...currentState,
+      remote: {
+        branches: {
+          ...currentState.remote.branches,
+          main: hash,
+        },
+        commits: {
+          ...currentState.remote.commits,
+          [hash]: newCommit,
+        },
+      },
+    };
+
+    this.state = nextState;
+
+    return {
+      success: true,
+      nextState,
+      output: `[Remote origin/main ${hash}] ${message}`,
+      explanation: {
+        title: 'Simulated Remote Change',
+        whatHappened: `A collaborator committed '${message}' directly to the remote repository origin/main.`,
+        why: 'In real projects, teammates push changes to the remote. You must use git fetch or git pull to bring them into your local repo.',
+        underTheHood: `Remote branch ref origin/main updated to ${hash}.`,
+        whatChanged: [`Created remote commit ${hash} on origin/main`],
+      },
+      animationEvents: [
+        {
+          id: `remote-commit-${hash}`,
+          type: 'CREATE_COMMIT',
+          payload: { hash, message },
+          description: `Collaborator pushed ${hash} to origin/main`,
+        },
+      ],
+    };
+  }
+
   public executeCommand(input: string): GitOperationResult {
     const trimmed = input.trim();
     if (!trimmed) {
       return this.errorResult('Empty command');
+    }
+
+    if (trimmed === 'clear') {
+      return {
+        success: true,
+        nextState: this.getState(),
+        output: '__CLEAR_CONSOLE__',
+        explanation: {
+          title: 'clear',
+          whatHappened: 'Cleared terminal console window.',
+          why: 'Keeps command interface tidy.',
+          underTheHood: 'Console history buffer reset.',
+          whatChanged: [],
+        },
+        animationEvents: [],
+      };
     }
 
     const parts = trimmed.split(/\s+/);
